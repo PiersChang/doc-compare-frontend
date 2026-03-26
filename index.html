@@ -257,14 +257,17 @@ window.onload = async () => {
       await loadUserInfo();
       showApp();
 
-      // PayPal 訂閱回調：URL 帶有 subscription_id 表示付款完成
-      const subscriptionId = params.get('subscription_id');
-      if (subscriptionId) {
+      // PayPal 訂閱回調：偵測 paypal_return=subscription
+      // PayPal 回調時會自動附上 subscription_id 參數
+      const paypalReturn   = params.get('paypal_return');
+      const subscriptionId = params.get('subscription_id') || params.get('ba_token');
+      if (paypalReturn === 'subscription' || subscriptionId) {
         setStatus('訂閱確認中...', '');
-        // 清除 URL 參數
         window.history.replaceState({}, '', window.location.pathname);
+        // 若 PayPal 沒有直接帶 subscription_id，改從後端查詢最新訂閱
+        const sid = subscriptionId || '__latest__';
         try {
-          await api('/paypal/activate', { subscription_id: subscriptionId });
+          await api('/paypal/activate', { subscription_id: sid });
           await loadUserInfo();
           updateUserUI();
           setStatus('升級成功！歡迎使用付費方案 🎉', 'ok');
@@ -277,7 +280,26 @@ window.onload = async () => {
       const cancelled = params.get('paypal_cancelled');
       if (cancelled) {
         window.history.replaceState({}, '', window.location.pathname);
-        setStatus('訂閱已取消', '');
+        sessionStorage.removeItem('pending_order_id');
+        setStatus('付款已取消', '');
+      }
+
+      // PayPal 點數包回調：URL 帶有 token 和 PayerID
+      const paypalToken = params.get('token');
+      const payerId     = params.get('PayerID');
+      const pendingOrderId = sessionStorage.getItem('pending_order_id');
+      if (paypalToken && payerId && pendingOrderId) {
+        window.history.replaceState({}, '', window.location.pathname);
+        sessionStorage.removeItem('pending_order_id');
+        setStatus('確認付款中...', '');
+        try {
+          const result = await api('/credits/capture-order', { order_id: pendingOrderId });
+          await loadUserInfo();
+          updateUserUI();
+          setStatus(`✓ 成功購買 ${result.credits_added} 次點數！目前共 ${result.total_credits} 點`, 'ok');
+        } catch(e) {
+          setStatus('付款確認失敗，請聯絡客服：' + e.message, 'err');
+        }
       }
     } catch { logout(); }
   }
@@ -805,50 +827,13 @@ async function toggleCreditsPanel() {
 async function buyCredits(packageId) {
   setStatus('建立訂單中...', '');
   try {
-    const { order_id, package: pkg } = await api('/credits/create-order', { package_id: packageId });
-    const config = await loadPaypalConfig();
-    await loadPaypalSDK(config.client_id, 'capture');
-    showCreditsModal(order_id, pkg);
+    // 後端建立 PayPal 訂單並回傳跳轉連結
+    const result = await api('/credits/create-order-url', { package_id: packageId });
+    // 儲存 order_id 到 sessionStorage，回調後使用
+    sessionStorage.setItem('pending_order_id', result.order_id);
+    // 直接跳轉 PayPal，不需要 SDK
+    window.location.href = result.approve_url;
   } catch(e) { setStatus('建立訂單失敗：' + e.message, 'err'); }
-}
-
-function showCreditsModal(orderId, pkg) {
-  const overlay = document.createElement('div');
-  overlay.id = 'creditsOverlay';
-  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;';
-  const modal = document.createElement('div');
-  modal.style.cssText = 'background:#fff;border-radius:14px;padding:2rem;width:360px;max-width:90vw;';
-  modal.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
-      <h3 style="font-size:18px;font-weight:600;">購買 ${pkg.label} 點數</h3>
-      <button onclick="document.getElementById('creditsOverlay').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888;">✕</button>
-    </div>
-    <div style="background:#f5f4f0;border-radius:10px;padding:14px;margin-bottom:1.25rem;font-size:14px;">
-      <div style="font-size:22px;font-weight:700;margin-bottom:4px;">$${pkg.price} <span style="font-size:14px;font-weight:400;color:#888;">USD 一次性付款</span></div>
-      <div>✓ ${pkg.label}比對次數</div>
-      <div>✓ 點數永不過期</div>
-      <div>✓ 免費次數用完後自動扣點</div>
-    </div>
-    <div id="creditsBtnContainer"></div>
-    <p style="font-size:12px;color:#999;text-align:center;margin-top:10px;">付款由 PayPal 安全處理</p>
-  `;
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
-  window.paypal.Buttons({
-    style: { shape: 'rect', color: 'blue', layout: 'vertical', label: 'pay' },
-    createOrder: () => orderId,
-    onApprove: async () => {
-      document.getElementById('creditsOverlay').remove();
-      setStatus('確認付款中...', '');
-      try {
-        const result = await api('/credits/capture-order', { order_id: orderId });
-        await loadUserInfo();
-        updateUserUI();
-        setStatus(`✓ 成功購買 ${result.credits_added} 次點數！目前共 ${result.total_credits} 點`, 'ok');
-      } catch(e) { setStatus('付款確認失敗：' + e.message, 'err'); }
-    },
-    onError: (err) => { document.getElementById('creditsOverlay')?.remove(); setStatus('付款失敗，請稍後再試', 'err'); }
-  }).render('#creditsBtnContainer');
 }
 
 // ── 邀請好友 ───────────────────────────────────────────
