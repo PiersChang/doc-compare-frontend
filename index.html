@@ -885,11 +885,36 @@ async function buyCreditsECPay(packageId) {
   setStatus('建立綠界訂單中...', '');
   try {
     const result = await api('/ecpay/create-order', { package_id: packageId });
-    // 儲存 trade_no 供回調後輪詢
     sessionStorage.setItem('ecpay_trade_no', result.trade_no);
-    // 建立隱藏 form 並自動送出到綠界
     submitECPayForm(result.action, result.params);
+    // 開啟付款視窗後立即在原頁面輪詢，不依賴 ECPay 導回
+    pollECPayOrder(result.trade_no, 'credits');
   } catch(e) { setStatus('建立綠界訂單失敗：' + e.message, 'err'); }
+}
+
+function pollECPayOrder(tradeNo, type) {
+  setStatus('付款視窗已開啟，請完成付款後稍候...', '');
+  let retries = 0;
+  const poll = setInterval(async () => {
+    try {
+      const r = await api(`/ecpay/order-status?trade_no=${tradeNo}`, null, 'GET');
+      if (r.status === 'completed') {
+        clearInterval(poll);
+        sessionStorage.removeItem('ecpay_trade_no');
+        await loadUserInfo();
+        updateUserUI();
+        const msg = type === 'credits'
+          ? `✓ 成功購買 ${r.credits} 次點數！`
+          : '✓ 訂閱成功！歡迎使用付費方案';
+        setStatus(msg, 'ok');
+      } else if (++retries >= 20) {
+        clearInterval(poll);
+        setStatus('付款處理中，點數將於幾分鐘內到帳', 'ok');
+      }
+    } catch(e) {
+      if (++retries >= 20) clearInterval(poll);
+    }
+  }, 2000);
 }
 
 function submitECPayForm(action, params) {
@@ -958,6 +983,7 @@ async function startUpgradeECPay() {
     const result = await api('/ecpay/create-subscription', {});
     sessionStorage.setItem('ecpay_trade_no', result.trade_no);
     submitECPayForm(result.action, result.params);
+    pollECPayOrder(result.trade_no, 'subscription');
   } catch(e) {
     alert('建立綠界訂閱失敗：' + e.message);
     btns.forEach(b => { b.disabled = false; });
