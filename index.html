@@ -136,7 +136,7 @@
         <span id="planBadge" class="plan-badge">免費</span>
         <span id="usageText" style="color:#888"></span>
         <span id="creditsText" style="color:#854F0B;font-size:12px;"></span>
-        <button class="upgrade-header-btn" id="upgradeHeaderBtn" onclick="startUpgrade()" style="display:none">⚡ 升級無限版</button>
+        <button class="upgrade-header-btn" id="upgradeHeaderBtn" onclick="showUpgradeOptions()" style="display:none">⚡ 升級無限版</button>
         <button class="logout-btn" onclick="logout()">登出</button>
       </div>
     </div>
@@ -144,9 +144,18 @@
     <div id="upgradeBanner" class="upgrade-banner" style="display:none">
       <div>
         <p id="upgradeBannerMsg" style="font-weight:600;margin-bottom:2px;">升級付費方案，無限次使用</p>
-        <p style="font-size:12px;opacity:.85;">免費版每月 3 次・付費版 USD $6/月 無限次・隨時可取消</p>
+        <p style="font-size:12px;opacity:.85;">免費版每月 3 次・付費版 USD $6/月（TWD $192/月）無限次・隨時可取消</p>
       </div>
-      <button class="upgrade-btn" id="upgradeBtn" onclick="startUpgrade()">立即升級 →</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <div style="text-align:center;">
+          <button class="upgrade-btn" id="upgradeBtn" onclick="startUpgradeECPay()" style="background:#27ae60;">立即升級 綠界支付 →</button>
+          <div style="font-size:10px;color:#0c447c;margin-top:3px;">🇹🇼 台灣地區</div>
+        </div>
+        <div style="text-align:center;">
+          <button class="upgrade-btn" id="upgradeBtnPaypal" onclick="startUpgradePayPal()" style="background:#003087;">立即升級 PayPal →</button>
+          <div style="font-size:10px;color:#0c447c;margin-top:3px;">🌍 台灣以外地區</div>
+        </div>
+      </div>
     </div>
 
     <!-- 點數包 -->
@@ -282,6 +291,43 @@ window.onload = async () => {
         window.history.replaceState({}, '', window.location.pathname);
         sessionStorage.removeItem('pending_order_id');
         setStatus('付款已取消', '');
+      }
+
+      // 綠界點數包回調
+      const ecpayReturn = params.get('ecpay_return');
+      const ecpayTradeNo = sessionStorage.getItem('ecpay_trade_no');
+      if (ecpayReturn === 'credits' && ecpayTradeNo) {
+        window.history.replaceState({}, '', window.location.pathname);
+        sessionStorage.removeItem('ecpay_trade_no');
+        setStatus('確認付款中...', '');
+        // 輪詢後端確認訂單狀態（綠界是非同步通知，最多等 10 秒）
+        let retries = 0;
+        const poll = setInterval(async () => {
+          try {
+            const r = await api(`/ecpay/order-status?trade_no=${ecpayTradeNo}`, null, 'GET');
+            if (r.status === 'completed') {
+              clearInterval(poll);
+              await loadUserInfo();
+              updateUserUI();
+              setStatus(`✓ 成功購買 ${r.credits} 次點數！`, 'ok');
+            } else if (++retries >= 10) {
+              clearInterval(poll);
+              setStatus('付款處理中，點數將於幾分鐘內到帳', 'ok');
+            }
+          } catch { if (++retries >= 10) clearInterval(poll); }
+        }, 1500);
+      }
+
+      // 綠界訂閱回調
+      if (ecpayReturn === 'subscription') {
+        window.history.replaceState({}, '', window.location.pathname);
+        sessionStorage.removeItem('ecpay_trade_no');
+        setStatus('訂閱確認中...', '');
+        setTimeout(async () => {
+          await loadUserInfo();
+          updateUserUI();
+          setStatus('升級成功！歡迎使用付費方案 🎉', 'ok');
+        }, 2000);
       }
 
       // PayPal 點數包回調：URL 帶有 token 和 PayerID
@@ -817,23 +863,49 @@ async function toggleCreditsPanel() {
       <div style="background:#fff; border:${p.popular ? '2px solid #185fa5' : '1px solid #ddd'}; border-radius:10px; padding:14px; text-align:center; position:relative;">
         ${p.popular ? '<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:#185fa5;color:#fff;font-size:11px;font-weight:600;padding:2px 10px;border-radius:99px;">最划算</div>' : ''}
         <div style="font-size:20px; font-weight:700; color:#1a1a1a; margin-bottom:2px;">${p.label}</div>
-        <div style="font-size:13px; color:#888; margin-bottom:10px;">USD $${p.price}</div>
-        <button onclick="buyCredits('${p.id}')" style="width:100%; padding:8px; font-size:13px; font-weight:600; background:#1a1a1a; color:#fff; border:none; border-radius:7px; cursor:pointer;">購買</button>
+        <div style="font-size:13px; color:#888; margin-bottom:10px;">USD $${p.price}・TWD $${p.price_twd || '—'}</div>
+        <button onclick="buyCreditsECPay('${p.id}')" style="width:100%; padding:7px; font-size:12px; font-weight:600; background:#27ae60; color:#fff; border:none; border-radius:7px; cursor:pointer; margin-bottom:5px;">綠界支付 🇹🇼</button>
+        <button onclick="buyCreditsPayPal('${p.id}')" style="width:100%; padding:7px; font-size:12px; font-weight:600; background:#003087; color:#fff; border:none; border-radius:7px; cursor:pointer;">PayPal 🌍</button>
+        <div style="font-size:10px;color:#aaa;margin-top:5px;">台灣 / 台灣以外</div>
       </div>
     `).join('');
   } catch(e) { document.getElementById('packageList').innerHTML = '<p style="color:red;font-size:13px;">載入失敗</p>'; }
 }
 
-async function buyCredits(packageId) {
+async function buyCreditsPayPal(packageId) {
   setStatus('建立訂單中...', '');
   try {
-    // 後端建立 PayPal 訂單並回傳跳轉連結
     const result = await api('/credits/create-order-url', { package_id: packageId });
-    // 儲存 order_id 到 sessionStorage，回調後使用
     sessionStorage.setItem('pending_order_id', result.order_id);
-    // 直接跳轉 PayPal，不需要 SDK
     window.location.href = result.approve_url;
   } catch(e) { setStatus('建立訂單失敗：' + e.message, 'err'); }
+}
+
+async function buyCreditsECPay(packageId) {
+  setStatus('建立綠界訂單中...', '');
+  try {
+    const result = await api('/ecpay/create-order', { package_id: packageId });
+    // 儲存 trade_no 供回調後輪詢
+    sessionStorage.setItem('ecpay_trade_no', result.trade_no);
+    // 建立隱藏 form 並自動送出到綠界
+    submitECPayForm(result.action, result.params);
+  } catch(e) { setStatus('建立綠界訂單失敗：' + e.message, 'err'); }
+}
+
+function submitECPayForm(action, params) {
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = action;
+  form.style.display = 'none';
+  Object.entries(params).forEach(([k, v]) => {
+    const input = document.createElement('input');
+    input.type  = 'hidden';
+    input.name  = k;
+    input.value = v;
+    form.appendChild(input);
+  });
+  document.body.appendChild(form);
+  form.submit();
 }
 
 // ── 邀請好友 ───────────────────────────────────────────
@@ -875,24 +947,37 @@ async function loadPaypalConfig() {
   return paypalConfig;
 }
 
-async function startUpgrade() {
-  const btns = [
-    document.getElementById('upgradeBtn'),
-    document.getElementById('upgradeHeaderBtn')
-  ].filter(Boolean);
-  btns.forEach(b => { b.disabled = true; b.textContent = '載入中...'; });
+// ── 升級選項 ──────────────────────────────────────────
+function showUpgradeOptions() {
+  // header 按鈕：直接捲動到 upgrade banner
+  const banner = document.getElementById('upgradeBanner');
+  if (banner) banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 
+async function startUpgradeECPay() {
+  const btns = ['upgradeBtn', 'upgradeHeaderBtn'].map(id => document.getElementById(id)).filter(Boolean);
+  btns.forEach(b => { b.disabled = true; });
   try {
-    // 後端建立訂閱連結，直接跳轉 PayPal（不需要 SDK）
+    const result = await api('/ecpay/create-subscription', {});
+    sessionStorage.setItem('ecpay_trade_no', result.trade_no);
+    submitECPayForm(result.action, result.params);
+  } catch(e) {
+    alert('建立綠界訂閱失敗：' + e.message);
+    btns.forEach(b => { b.disabled = false; });
+  }
+}
+
+async function startUpgradePayPal() {
+  const btns = ['upgradeBtnPaypal', 'upgradeHeaderBtn'].map(id => document.getElementById(id)).filter(Boolean);
+  btns.forEach(b => { b.disabled = true; b.textContent = '載入中...'; });
+  try {
     const result = await api('/paypal/create-subscription-url', {});
     window.location.href = result.approve_url;
   } catch(e) {
-    alert('建立訂閱連結失敗：' + e.message);
+    alert('建立 PayPal 訂閱失敗：' + e.message);
     btns.forEach(b => { b.disabled = false; });
-    const upgradeBtn = document.getElementById('upgradeBtn');
-    if (upgradeBtn) upgradeBtn.textContent = '立即升級 →';
-    const headerBtn = document.getElementById('upgradeHeaderBtn');
-    if (headerBtn) headerBtn.textContent = '⚡ 升級無限版';
+    const btn = document.getElementById('upgradeBtnPaypal');
+    if (btn) btn.textContent = '立即升級 PayPal →';
   }
 }
 
