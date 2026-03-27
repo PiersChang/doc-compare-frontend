@@ -110,6 +110,7 @@
       <div id="loginError" class="status err" style="min-height:0"></div>
       <button class="auth-btn" onclick="doLogin()">登入</button>
       <div class="auth-switch">還沒有帳號？<a onclick="showRegister()">免費註冊</a></div>
+      <div class="auth-switch" style="margin-top:6px;">忘記密碼？<a onclick="showForgotPassword()">重設密碼</a></div>
     </div>
     <!-- Register Form -->
     <div id="registerForm" class="auth-card" style="display:none">
@@ -252,6 +253,12 @@ let lastDocB = "";
 // ── 初始化 ────────────────────────────────────────────
 window.onload = async () => {
   const params = new URLSearchParams(window.location.search);
+
+  // 重設密碼連結
+  const resetToken = params.get('reset_token');
+  if (resetToken) {
+    document.getElementById('resetModal').style.display = 'flex';
+  }
 
   // 自動填入邀請碼
   const urlRef = params.get('ref');
@@ -1009,6 +1016,72 @@ function closePaypalModal() {
   if (overlay) overlay.remove();
 }
 
+// ── 忘記密碼 ──────────────────────────────────────────
+function showForgotPassword() {
+  const modal = document.getElementById('forgotModal');
+  modal.style.display = 'flex';
+  // 自動帶入登入表單已輸入的 Email
+  const loginEmail = document.getElementById('loginEmail').value;
+  if (loginEmail) document.getElementById('forgotEmail').value = loginEmail;
+  document.getElementById('forgotStatus').textContent = '';
+  document.getElementById('forgotStatus').className = 'status';
+}
+
+function closeForgotModal() {
+  document.getElementById('forgotModal').style.display = 'none';
+}
+
+async function doForgotPassword() {
+  const email    = document.getElementById('forgotEmail').value.trim();
+  const statusEl = document.getElementById('forgotStatus');
+  if (!email) { statusEl.textContent = '請輸入 Email'; statusEl.className = 'status err'; return; }
+  statusEl.textContent = '發送中...';
+  statusEl.className   = 'status';
+  try {
+    const res  = await fetch(API_BASE + '/auth/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+    statusEl.textContent = data.message || '已發送重設連結';
+    statusEl.className   = 'status ok';
+  } catch(e) {
+    statusEl.textContent = '發送失敗，請稍後再試';
+    statusEl.className   = 'status err';
+  }
+}
+
+async function doResetPassword() {
+  const resetToken = new URLSearchParams(window.location.search).get('reset_token');
+  const pw         = document.getElementById('resetPassword').value;
+  const pw2        = document.getElementById('resetPasswordConfirm').value;
+  const statusEl   = document.getElementById('resetStatus');
+  if (pw.length < 6) { statusEl.textContent = '密碼至少 6 個字元'; statusEl.className = 'status err'; return; }
+  if (pw !== pw2)    { statusEl.textContent = '兩次密碼不一致';     statusEl.className = 'status err'; return; }
+  statusEl.textContent = '重設中...';
+  statusEl.className   = 'status';
+  try {
+    const res  = await fetch(API_BASE + '/auth/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: resetToken, new_password: pw })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || '重設失敗');
+    statusEl.textContent = '密碼重設成功！3 秒後跳轉登入...';
+    statusEl.className   = 'status ok';
+    setTimeout(() => {
+      document.getElementById('resetModal').style.display = 'none';
+      window.history.replaceState({}, '', window.location.pathname);
+      showLogin();
+    }, 3000);
+  } catch(e) {
+    statusEl.textContent = e.message;
+    statusEl.className   = 'status err';
+  }
+}
+
 // ── 工具 ──────────────────────────────────────────────
 function setStatus(msg, type='') {
   const el = document.getElementById('status');
@@ -1031,6 +1104,32 @@ async function api(path, body=null, method='POST') {
 }
 </script>
 <!-- PayPal SDK 由 startUpgrade() 動態載入 -->
+
+<!-- 忘記密碼 Modal -->
+<div id="forgotModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:2000; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:14px; padding:2rem; max-width:400px; width:90vw; position:relative;">
+    <button onclick="closeForgotModal()" style="position:absolute; top:16px; right:16px; background:none; border:none; font-size:20px; cursor:pointer; color:#888;">✕</button>
+    <h2 style="font-size:18px; font-weight:700; margin-bottom:8px;">重設密碼</h2>
+    <p style="font-size:14px; color:#666; margin-bottom:1.5rem;">輸入您的 Email，我們將發送重設連結（30 分鐘內有效）</p>
+    <div class="field"><label>Email</label><input type="email" id="forgotEmail" placeholder="you@example.com"/></div>
+    <div id="forgotStatus" class="status" style="min-height:0; margin-bottom:8px;"></div>
+    <button class="auth-btn" onclick="doForgotPassword()">發送重設連結</button>
+    <div class="auth-switch" style="margin-top:12px;"><a onclick="closeForgotModal()">返回登入</a></div>
+  </div>
+</div>
+
+<!-- 重設密碼 Modal -->
+<div id="resetModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:2000; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:14px; padding:2rem; max-width:400px; width:90vw; position:relative;">
+    <h2 style="font-size:18px; font-weight:700; margin-bottom:8px;">設定新密碼</h2>
+    <p style="font-size:14px; color:#666; margin-bottom:1.5rem;">請輸入您的新密碼</p>
+    <div class="field"><label>新密碼</label><input type="password" id="resetPassword" placeholder="至少 6 個字元"/></div>
+    <div class="field"><label>確認新密碼</label><input type="password" id="resetPasswordConfirm" placeholder="再次輸入密碼"/></div>
+    <div id="resetStatus" class="status" style="min-height:0; margin-bottom:8px;"></div>
+    <button class="auth-btn" onclick="doResetPassword()">確認重設密碼</button>
+  </div>
+</div>
+
 <!-- 隱私說明 Modal -->
 <div id="privacyModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:2000; align-items:center; justify-content:center;">
   <div style="background:#fff; border-radius:14px; padding:2rem; max-width:520px; width:90vw; max-height:85vh; overflow-y:auto; position:relative;">
